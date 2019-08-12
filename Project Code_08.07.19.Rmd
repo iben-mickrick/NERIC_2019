@@ -1,0 +1,1096 @@
+---
+title: "QBS 192.5 Project"
+author: "Iben M. Ricket"
+date: "5/15/2019"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# QBS 192.5 Project
+
+Necessary libraries
+```{r}
+library(DBI)
+library(RMariaDB)
+library(dbplyr)
+library(RSQLite)
+library(dplyr)
+library(tidyverse)
+library(tidyr)
+library(naniar)
+library(glmnet)
+library(healthcareai)
+library(pROC)
+library(multiROC)
+library(caret)
+library(tableone)
+library(MASS)
+library(readr)
+```
+
+Establish connection to 500 Cities Schema in MySQL
+```{r}
+#establishes connection to 500 Cities dB within MySQL
+storiesDb <- dbConnect(RMariaDB::MariaDB(), user='connection', password='test12345', dbname='CDC_Data', host='localhost')
+#list available tables
+dbListTables(storiesDb)
+```
+
+Establish connection to ACS Data Schema in MySQL
+```{r}
+#establishes connection to ACS_DATA dBs within MySQL
+storiesDb1 <- dbConnect(RMariaDB::MariaDB(), user='connection2', password='test12345', dbname='ACS_Data', host='localhost')
+#list available tables
+dbListTables(storiesDb1)
+```
+
+Pull in copy of 500 Cities "Outcome" data table 
+```{r}
+#save CDC 500 cities outcome data
+Outcome<-dbReadTable(storiesDb, "outcome")
+```
+
+Disconnect from 500 Cities schema in MySQL
+```{r}
+#disconnect from dB
+dbDisconnect(storiesDb)
+```
+
+Pull in copies of ACS data tables
+```{r}
+#save monthly_housing costs
+Housing<-dbReadTable(storiesDb1, "monthly_housing_costs")
+#save monthly owner costs 
+Owner<-dbReadTable(storiesDb1, "monthly_owner_costs")
+#save monthly utility costs
+Utility<-dbReadTable(storiesDb1, "monthly_utilities")
+#save mortgage information
+Mortgage<-dbReadTable(storiesDb1, "mortgage_info")
+#save rent information
+Rent<-dbReadTable(storiesDb1, "rent_info")
+#save monthly transportation information 
+Transport<-dbReadTable(storiesDb1, "transport")
+```
+
+Disconnect from ACS Data schema 
+```{r}
+#disconnect from dB
+dbDisconnect(storiesDb1)
+```
+
+#Data Cleaning 
+Within the outcome data, crudge prevalance and 95% confidence intervals are removed. The only data remaining includes location, FIPS code, the adjusted prevalance for the conditions measured and the geolocation of each place. 
+
+The final outcome file (titled, "outcome1") contains 500 observations and 32 variables. 
+
+```{r}
+#list name and column location of variables in outcome data
+names(Outcome)
+#remove extraneous variables
+Outcome1<-Outcome[-c(1,4,5:6, 8:10, 12:14, 16:18, 20:22, 24:26, 28:30, 32:34, 36:38, 40:42, 44:46, 48:50,
+                     52:54, 56:58, 60:62, 64:66, 68:70, 72:74, 76:78, 80:82, 84:86, 88:90, 92:94, 96:98,
+                     100:102, 104:106, 108:110, 112:114, 116:117)]
+names(Outcome1)
+```
+
+##Data type & variable name transformation
+
+\textbf{Outcome}
+Most datatypes are correctly assigned. The FIPS code is currently treated as an integer, which could cause problems if it is included in the final model. As such, a new variable is created which is a factored version of PlaceFips (titled, "PlaceFIPS1")
+
+```{r}
+#obtain list of data types for each variable in outcome1
+str(Outcome1)
+#Create a factored version of FIPS code
+Outcome1$PlaceFIPS1<-as.factor(Outcome1$PlaceFIPS)
+str(Outcome1)
+```
+
+\textbf{Housing}
+Most datatypes are correctly assigned. The The FIPS code is currently treated as an integer, which could cause problems if it is included in the final model. As such, a new variable is created which is a factored version of PlaceFips (titled, "PlaceFIPS1"). In addition, the GEO.id, GEO.id2 and GEO.display.label are removed to offer clairty in the final merge. 
+
+```{r}
+str(Housing)
+names(Housing)
+#Create a factored version of FIPS code
+Housing$PlaceFIPS1<-as.factor(Housing$GEO.id2)
+#remove GEO.id, GEO.id2 and GEO.display.label
+Housing<-Housing[-c(1:3)]
+```
+
+As it stands, the variables do not have detailed names. There might also be some duplicate names across the six ACS data files. As such, variables in the Housing data set are being renamed below. 
+
+```{r}
+names(Housing)
+names(Housing)[names(Housing)=="HD01_VD01"]<-"Med_housing_cost"
+#remove "HD02_VD01"
+Housing<-Housing[-c(2)]
+```
+
+\textbf{Mortgage}
+Most datatypes are correctly assigned. The FIPS code is currently treated as an integer, which could cause problems if it is included in the final model. As such, a new variable is created which is a factored version of PlaceFips (titled, "PlaceFIPS1"). In addition, the GEO.id, GEO.id2 and GEO.display.label are removed to offer clairty in the final merge. 
+
+```{r}
+str(Mortgage)
+names(Mortgage)
+#Create a factored version of FIPS code
+Mortgage$PlaceFIPS1<-as.factor(Mortgage$GEO.id2)
+Mortgage<-Mortgage[-c(1:3)]
+```
+
+As it stands, the variables do not have detailed names. There might also be some duplicate names across the six ACS data files. As such, variables in the Mortgage data set are being renamed below. 
+
+```{r}
+names(Mortgage)
+names(Mortgage)[names(Mortgage)=="HC01_EST_VC01"]<-"owner_units_mort"
+names(Mortgage)[names(Mortgage)=="HC01_EST_VC10"]<-"value_owner_units_mort"
+names(Mortgage)[names(Mortgage)=="HC01_EST_VC13"]<-"second_m_or_equity_loan"
+names(Mortgage)[names(Mortgage)=="HC01_EST_VC14"]<-"second_mortgage"
+names(Mortgage)[names(Mortgage)=="HC01_EST_VC15"]<-"equity_loan"
+names(Mortgage)[names(Mortgage)=="HC01_EST_VC16"]<-"both_secondM_equity_loan"
+names(Mortgage)[names(Mortgage)=="HC01_EST_VC17"]<-"no_second_loan"
+names(Mortgage)[names(Mortgage)=="HC01_EST_VC28"]<-"median_household_income_adjD"
+names(Mortgage)[names(Mortgage)=="HC01_EST_VC48"]<-"median_owner_housing_cost"
+names(Mortgage)[names(Mortgage)=="HC01_EST_VC78"]<-"median_owner_estate_tax"
+```
+
+
+\textbf{Owner}
+An extra symbol is seen in HD01_VD04, which must be removed.
+
+In addition, the FIPS code is currently treated as an integer, which could cause problems if it is included in the final model. As such, a new variable is created which is a factored version of PlaceFips (titled, "PlaceFIPS1"). In addition, the GEO.id, GEO.id2 and GEO.display.label are removed to offer clairty in the final merge. 
+
+```{r}
+str(Owner)
+names(Owner)
+#remove symbom ol HD01_VD04 variable 
+Owner$HD01_VD04=as.numeric(gsub("\\-", "", Owner$HD01_VD04))
+#Create a factored version of FIPS code
+Owner$PlaceFIPS1<-as.factor(Owner$GEO.id2)
+Owner<-Owner[-c(1:3)]
+```
+
+As it stands, the variables do not have detailed names. There might also be some duplicate names across the six ACS data files. As such, variables in the Owner data set are being renamed below. 
+
+```{r}
+names(Owner)
+names(Owner)[names(Owner)=="HD01_VD02"]<-"median_selected_owner_pHH"
+names(Owner)[names(Owner)=="HD01_VD03"]<-"median_selected_owner_pHH_wm"
+names(Owner)[names(Owner)=="HD01_VD04"]<-"median_selected_owner_pHH_wom"
+#remove extra variables 
+Owner<-Owner[-c(2, 4, 6)]
+```
+
+
+\textbf{Rent}
+The FIPS code is currently treated as an integer, which could cause problems if it is included in the final model. As such, a new variable is created which is a factored version of PlaceFips (titled, "PlaceFIPS1"). In addition, the GEO.id, GEO.id2 and GEO.display.label are removed to offer clairty in the final merge. 
+
+```{r}
+str(Rent)
+names(Rent)
+#Create a factored version of FIPS code
+Rent$PlaceFIPS1<-as.factor(Rent$GEO.id2)
+Rent<-Rent[-c(1:3)]
+```
+
+As it stands, the variables do not have detailed names. There might also be some duplicate names across the six ACS data files. As such, variables in the Rent data set are being renamed below. 
+
+```{r}
+names(Rent)
+names(Rent)[names(Rent)=="HC01_EST_VC01"]<-"housing_unit_wom"
+names(Rent)[names(Rent)=="HC01_EST_VC11"]<-"median_value_housing_unit_wom"
+names(Rent)[names(Rent)=="HC01_EST_VC22"]<-"median_HH_income_wom"
+names(Rent)[names(Rent)=="HC01_EST_VC39"]<-"median_housing_costs_wom"
+names(Rent)[names(Rent)=="HC01_EST_VC69"]<-"median_estate_tax_wom"
+#remove excess variable
+Rent<-Rent[-c(6)]
+```
+
+
+\textbf{Transport}
+The FIPS code is currently treated as an integer, which could cause problems if it is included in the final model. As such, a new variable is created which is a factored version of PlaceFips (titled, "PlaceFIPS1"). In addition, the GEO.id, GEO.id2 and GEO.display.label are removed to offer clairty in the final merge. 
+
+```{r}
+str(Transport)
+names(Transport)
+#Create a factored version of FIPS code
+Transport$PlaceFIPS1<-as.factor(Transport$GEO.id2)
+Transport<-Transport[-c(1:3)]
+```
+
+As it stands, the variables do not have detailed names. There might also be some duplicate names across the six ACS data files. As such, variables in the Transport data set are being renamed below. 
+
+```{r}
+names(Transport)
+names(Transport)[names(Transport)=="HC01_EST_VC01"]<-"num_workers"
+names(Transport)[names(Transport)=="HC02_EST_VC01"]<-"vehicle_alone"
+names(Transport)[names(Transport)=="HC03_EST_VC01"]<-"vehicle_alone_worker"
+names(Transport)[names(Transport)=="HC04_EST_VC01"]<-"public_transit_worker"
+#remove excess variables
+Transport<-Transport[-c(2, 4, 6, 8)]
+```
+
+
+\textbf{Utility}
+Several variables are expressed as characters. This is because missing values in the ACS data are expressed as "N". Within R, missing values should be expressed a NA. The code that follows will replace all values of "N" with NA.
+
+In addition, the FIPS code is currently treated as an integer, which could cause problems if it is included in the final model. As such, a new variable is created which is a factored version of PlaceFips (titled, "PlaceFIPS1"). In addition, the GEO.id, GEO.id2 and GEO.display.label are removed to offer clairty in the final merge. 
+
+```{r}
+str(Utility)
+names(Utility)
+#convert all instances of "N" to NA
+Utility<-Utility %>%
+  mutate_if(is.character, list(~na_if(., "N")))
+#Create a factored version of FIPS codes
+Utility$PlaceFIPS1<-as.factor(Utility$GEO.id2)
+Utility<-Utility[-c(1:3)]
+#Removing phone service because it contains negative values and unable to understand
+Utility<-Utility[-c(10)]
+Utility<- Utility[-c(3, 12:13)]
+Utility1<-Utility[-c(3:8)]
+```
+
+As it stands, the variables do not have detailed names. There might also be some duplicate names across the six ACS data files. As such, variables in the Utilities data set are being renamed below. 
+
+```{r}
+names(Utility)
+names(Utility)[names(Utility)=="HC01_VC84"]<-"vehicles_available"
+names(Utility)[names(Utility)=="HC01_VC85"]<-"HH_w_no_vehicles_available"
+names(Utility)[names(Utility)=="HC01_VC95"]<-"units_house_heat_ele"
+names(Utility)[names(Utility)=="HC01_VC96"]<-"units_house_heat_oil"
+names(Utility)[names(Utility)=="HC01_VC97"]<-"units_house_heat_coal"
+names(Utility)[names(Utility)=="HC01_VC98"]<-"units_house_heat_wood"
+names(Utility)[names(Utility)=="HC01_VC99"]<-"units_house_heat_solar"
+names(Utility)[names(Utility)=="HC01_VC100"]<-"units_house_heat_other"
+names(Utility)[names(Utility)=="HC01_VC101"]<-"units_house_heat_none"
+names(Utility)[names(Utility)=="HC01_VC133"]<-"mort_status_wm"
+names(Utility)[names(Utility)=="HC01_VC134"]<-"mort_status_wom"
+names(Utility)[names(Utility)=="HC01_VC138"]<-"housing_cost_wm"
+names(Utility)[names(Utility)=="HC01_VC148"]<-"housing_cost_wom"
+#remove extra variables
+Utility<-Utility[-c(9:10)]
+```
+
+
+#Merge data files
+Several steps are utilized to merge all ACS data files. The final step combined the combined ACS data (step5) and the outcome files.
+
+Step 1: merge Housing and Mortgage files
+```{r}
+step1<-merge(Housing, Mortgage, by="PlaceFIPS1")
+```
+
+Step 2: merge Owner and Rent files
+```{r}
+step2<-merge(Owner, Rent, by="PlaceFIPS1")
+```
+
+Step 3: merge Transport and Utility files
+```{r}
+step3<-merge(Transport, Utility, by="PlaceFIPS1")
+```
+
+Step 4: Merge step1 and step2 files
+```{r}
+step4<-merge(step1, step2, by="PlaceFIPS1")
+```
+
+Step 5: Merge step4 and step 3 files
+```{r}
+step5<-merge(step4, step3, by="PlaceFIPS1")
+```
+
+Step 6: Merge step5 and outcome1 files
+```{r}
+Final<-merge(step5, Outcome1, by="PlaceFIPS1", all.x  = TRUE)
+```
+
+
+The final combined file contains 306 observations and 66 variables. 
+
+#Descriptive statistics
+
+Summary of continuous variables in Final data file
+
+Descriptive statistics of covariates
+```{r}
+#not normally distributed---should be log transformed 
+summary(Final$Med_housing_cost)
+summary(Final$owner_units_mort)
+summary(Final$value_owner_units_mort)
+summary(Final$second_m_or_equity_loan)
+summary(Final$second_mortgage)
+summary(Final$no_second_loan)
+summary(Final$equity_loan)
+summary(Final$both_secondM_equity_loan)
+summary(Final$median_household_income_adjD)
+summary(Final$median_owner_estate_tax)
+summary(Final$median_selected_owner_pHH_wom)
+summary(Final$housing_unit_wom)
+summary(Final$median_value_housing_unit_wom)
+summary(Final$median_HH_income_wom)
+summary(Final$median_housing_costs_wom)
+summary(Final$median_estate_tax_wom)
+summary(Final$vehicle_alone)
+summary(Final$vehicle_alone_worker)
+summary(Final$public_transit_worker)
+summary(Final$vehicles_available)
+summary(Final$mort_status_gen)
+summary(Final$housing_cost_wm)
+summary(Final$housing_cost_wom)
+
+#Relatively normally distributed--can remain as is  
+summary(Final$second_m_or_equity_loan)
+hist(Final$second_m_or_equity_loan)
+summary(Final$second_mortgage)
+hist(Final$second_mortgage)
+summary(Final$median_owner_housing_cost)
+hist(Final$median_owner_housing_cost)
+summary(Final$median_selected_owner_pHH)
+hist(Final$median_selected_owner_pHH)
+summary(Final$median_selected_owner_pHH_wm)
+hist(Final$median_selected_owner_pHH_wm)
+summary(Final$median_selected_owner_pHH_wm)
+hist(Final$median_selected_owner_pHH_wm)
+summary(Final$HH_w_no_vehicles_available)
+hist(Final$HH_w_no_vehicles_available)
+summary(Final$mort_status_wm)
+hist(Final$mort_status_wm)
+summary(Final$mort_status_wom)
+hist(Final$mort_status_wom)
+```
+
+
+Log transformation of skewed variables
+```{r}
+#Some zeros exists and create -inf when log taken
+Final$Med_housing_cost<-log(Final$Med_housing_cost)
+Final$Med_housing_cost[Final$Med_housing_cost== '-Inf']<-0
+
+Final$owner_units_mort<-log(Final$owner_units_mort)
+Final$owner_units_mort[Final$owner_units_mort== '-Inf']<-0
+
+Final$value_owner_units_mort<-log(Final$value_owner_units_mort)
+Final$value_owner_units_mort[Final$value_owner_units_mort== '-Inf']<-0
+
+Final$second_m_or_equity_loan<-log(Final$second_m_or_equity_loan)
+Final$second_m_or_equity_loan[Final$second_m_or_equity_loan== '-Inf']<-0
+
+Final$second_mortgage<-log(Final$second_mortgage)
+Final$second_mortgage[Final$second_mortgage== '-Inf']<-0
+#second mortgage has a negative value 
+Final$second_mortgage<-abs(Final$second_mortgage)
+
+Final$median_household_income_adjD<-log(Final$median_household_income_adjD)
+Final$median_household_income_adjD[Final$median_household_income_adjD== '-Inf']<-0
+
+Final$median_owner_estate_tax<-log(Final$median_owner_estate_tax)
+Final$median_owner_estate_tax[Final$median_owner_estate_tax== '-Inf']<-0
+
+Final$median_selected_owner_pHH_wom<-log(Final$median_selected_owner_pHH_wom)
+Final$median_selected_owner_pHH_wom[Final$median_selected_owner_pHH_wom== '-Inf']<-0
+
+Final$housing_unit_wom<-log(Final$housing_unit_wom)
+Final$housing_unit_wom[Final$housing_unit_wom== '-Inf']<-0
+
+Final$median_HH_income_wom<-log(Final$median_HH_income_wom)
+Final$median_HH_income_wom[Final$median_HH_income_wom== '-Inf']<-0
+
+Final$median_housing_costs_wom<-log(Final$median_housing_costs_wom)
+Final$median_housing_costs_wom[Final$median_housing_costs_wom== '-Inf']<-0
+
+Final$median_estate_tax_wom <- log(Final$median_estate_tax_wom)
+Final$median_estate_tax_wom[Final$median_estate_tax_wom== '-Inf']<-0
+
+Final$num_workers<-log(Final$num_workers)
+Final$num_workers[Final$num_workers=='Inf']<-0
+
+Final$vehicle_alone<-log(Final$vehicle_alone)
+Final$vehicle_alone[Final$vehicle_alone== '-Inf']<-0
+
+Final$vehicle_alone_worker <- log(Final$vehicle_alone_worker)
+Final$vehicle_alone_worker[Final$vehicle_alone_worker== '-Inf']<-0
+
+Final$public_transit_worker <- log(Final$public_transit_worker)
+Final$public_transit_worker[Final$public_transit_worker== '-Inf']<-0
+
+
+Final$vehicles_available <- log(Final$vehicles_available)
+Final$vehicles_available[Final$vehicles_available== '-Inf']<-0
+
+Final$housing_cost_wm <- log(Final$housing_cost_wm)
+Final$housing_cost_wm [Final$housing_cost_wm == '-Inf']<-0
+
+Final$housing_cost_wom <- log(Final$housing_cost_wom)
+Final$housing_cost_wom [Final$housing_cost_wom == '-Inf']<-0
+
+```
+
+
+Descriptive statistics on outcome variable 
+```{r}
+summary(Outcome1$CHD_AdjPrev)
+hist(Outcome1$CHD_AdjPrev, main = "Histogram of CHD Prevalance", xlab = "CHD Prevalance")
+```
+
+#Missingess 
+By default, GLM procedure will perform a case-wise deletion is missing values are present. The code below investigates the missingess of the variables, prior to model development. 
+
+```{r}
+#Quick check of missingness in entire data file reveals missingness
+table(is.na(Final))
+#Column wise check of missingness 
+sapply(Final, function(x)sum(is.na(x)))
+```
+
+No coal as heating unit. Will drop. 
+```{r}
+str(Final$units_house_heat_coal)
+str(Final$units_house_heat_ele)
+str(Final$units_house_heat_oil)
+str(Final$units_house_heat_solar)
+str(Final$units_house_heat_wood)
+str(Final$units_house_heat_other)
+```
+
+Transform the missing values in the fuel unit variables to 0
+```{r}
+Final$units_house_heat_ele[is.na(Final$units_house_heat_ele)]<-0
+Final$units_house_heat_ele<-as.factor(Final$units_house_heat_ele)
+Final$units_house_heat_ele<-as.numeric(Final$units_house_heat_ele)
+
+Final$units_house_heat_oil[is.na(Final$units_house_heat_oil)]<-0
+Final$units_house_heat_oil<-as.factor(Final$units_house_heat_oil)
+Final$units_house_heat_oil<-as.numeric(Final$units_house_heat_oil)
+
+Final$units_house_heat_wood[is.na(Final$units_house_heat_wood)]<-0
+Final$units_house_heat_wood<-as.factor(Final$units_house_heat_wood)
+Final$units_house_heat_wood<-as.numeric(Final$units_house_heat_wood)
+
+Final$units_house_heat_solar[is.na(Final$units_house_heat_solar)]<-0
+Final$units_house_heat_solar<-as.factor(Final$units_house_heat_solar)
+Final$units_house_heat_solar<-as.numeric(Final$units_house_heat_solar)
+
+Final$units_house_heat_other[is.na(Final$units_house_heat_other)]<-0
+Final$units_house_heat_other<-as.factor(Final$units_house_heat_other)
+Final$units_house_heat_other<-as.numeric(Final$units_house_heat_other)
+```
+
+
+Check to see if variable transformation affects distribution
+```{r}
+hist(Final$units_house_heat_ele)
+hist(Final$units_house_heat_oil)
+hist(Final$units_house_heat_wood)
+hist(Final$units_house_heat_solar)
+hist(Final$units_house_heat_other)
+```
+
+Transform into binary variables
+```{r}
+Final$units_house_heat_ele<-ifelse(Final$units_house_heat_ele>1, 1, 0)
+table(Final$units_house_heat_ele)
+Final$units_house_heat_oil<-ifelse(Final$units_house_heat_oil>1, 1, 0)
+table(Final$units_house_heat_oil)
+Final$units_house_heat_wood<-ifelse(Final$units_house_heat_wood>1, 1, 0)
+table(Final$units_house_heat_wood)
+Final$units_house_heat_solar<-ifelse(Final$units_house_heat_solar>1, 1, 0)
+table(Final$units_house_heat_solar)
+Final$units_house_heat_other<-ifelse(Final$units_house_heat_other>1, 1, 0)
+table(Final$units_house_heat_other)
+```
+
+
+There are 25 observations with missing outcome data. Given the small sample size of this project, it's important to retain all possible pieces of data. As such, imputation procedures were utilized. Specifically, imputation by using the mean of the value of the variable was utilzied, only if the variable was missing a value. 
+```{r}
+sapply(Final, function(x)sum(is.na(x)))
+attach(Final)
+ACCESS2_AdjPrev.imp <- ifelse(is.na(ACCESS2_AdjPrev), mean(ACCESS2_AdjPrev, na.rm=TRUE), ACCESS2_AdjPrev)
+ARTHRITIS_AdjPrev.imp<-ifelse(is.na(ARTHRITIS_AdjPrev), mean(ARTHRITIS_AdjPrev, na.rm=TRUE), ARTHRITIS_AdjPrev)
+BINGE_AdjPrev.imp<-ifelse(is.na(BINGE_AdjPrev), mean(BINGE_AdjPrev, na.rm=TRUE), BINGE_AdjPrev)
+BPHIGH_AdjPrev.imp<-ifelse(is.na(BPHIGH_AdjPrev), mean(BPHIGH_AdjPrev, na.rm=TRUE), BPHIGH_AdjPrev)
+BPMED_AdjPrev.imp<-ifelse(is.na(BPMED_AdjPrev), mean(BPMED_AdjPrev, na.rm=TRUE), BPMED_AdjPrev)
+CANCER_AdjPrev.imp<-ifelse(is.na(CANCER_AdjPrev), mean(CANCER_AdjPrev, na.rm=TRUE), CANCER_AdjPrev)
+CASTHMA_AdjPrev.imp<-ifelse(is.na(CASTHMA_AdjPrev), mean(CASTHMA_AdjPrev, na.rm=TRUE), CASTHMA_AdjPrev)
+CHD_AdjPrev.imp<-ifelse(is.na(CHD_AdjPrev), mean(CHD_AdjPrev, na.rm=TRUE), CHD_AdjPrev)
+CHECKUP_AdjPrev.imp<-ifelse(is.na(CHECKUP_AdjPrev), mean(CHECKUP_AdjPrev, na.rm=TRUE), CHECKUP_AdjPrev)
+CHOLSCREEN_AdjPrev.imp<-ifelse(is.na(CHOLSCREEN_AdjPrev), mean(CHOLSCREEN_AdjPrev, na.rm=TRUE), CHOLSCREEN_AdjPrev)
+COPD_AdjPrev.imp<-ifelse(is.na(COPD_AdjPrev), mean(COPD_AdjPrev, na.rm=TRUE), COPD_AdjPrev)
+COREM_AdjPrev.imp<-ifelse(is.na(COREM_AdjPrev), mean(COREM_AdjPrev, na.rm=TRUE), COREM_AdjPrev)
+COREW_AdjPrev.imp<-ifelse(is.na(COREW_AdjPrev), mean(COREW_AdjPrev, na.rm=TRUE), COREW_AdjPrev)
+CSMOKING_AdjPrev.imp<-ifelse(is.na(CSMOKING_AdjPrev), mean(CSMOKING_AdjPrev, na.rm=TRUE), CSMOKING_AdjPrev)
+DENTAL_AdjPrev.imp<-ifelse(is.na(DENTAL_AdjPrev), mean(DENTAL_AdjPrev, na.rm=TRUE), DENTAL_AdjPrev)
+DIABETES_AdjPrev.imp<-ifelse(is.na(DIABETES_AdjPrev), mean(DIABETES_AdjPrev, na.rm=TRUE), DIABETES_AdjPrev)
+HIGHCHOL_AdjPrev.imp<-ifelse(is.na(HIGHCHOL_AdjPrev), mean(HIGHCHOL_AdjPrev, na.rm=TRUE), HIGHCHOL_AdjPrev)
+KIDNEY_AdjPrev.imp<-ifelse(is.na(KIDNEY_AdjPrev), mean(KIDNEY_AdjPrev, na.rm=TRUE), KIDNEY_AdjPrev)
+LPA_AdjPrev.imp<-ifelse(is.na(LPA_AdjPrev), mean(LPA_AdjPrev, na.rm=TRUE), LPA_AdjPrev)
+MAMMOUSE_AdjPrev.imp<-ifelse(is.na(MAMMOUSE_AdjPrev), mean(MAMMOUSE_AdjPrev, na.rm=TRUE), MAMMOUSE_AdjPrev)
+MHLTH_AdjPrev.imp<-ifelse(is.na(MHLTH_AdjPrev), mean(MHLTH_AdjPrev, na.rm=TRUE), MHLTH_AdjPrev)
+OBESITY_AdjPrev.imp<-ifelse(is.na(OBESITY_AdjPrev), mean(OBESITY_AdjPrev, na.rm=TRUE), OBESITY_AdjPrev)
+PAPTEST_AdjPrev.imp<-ifelse(is.na(PAPTEST_AdjPrev), mean(PAPTEST_AdjPrev, na.rm=TRUE), PAPTEST_AdjPrev)
+PHLTH_AdjPrev.imp<-ifelse(is.na(PHLTH_AdjPrev), mean(PHLTH_AdjPrev, na.rm=TRUE), PHLTH_AdjPrev)
+SLEEP_AdjPrev.imp<-ifelse(is.na(SLEEP_AdjPrev), mean(SLEEP_AdjPrev, na.rm=TRUE), SLEEP_AdjPrev)
+STROKE_AdjPrev.imp<-ifelse(is.na(STROKE_AdjPrev), mean(STROKE_AdjPrev, na.rm=TRUE), STROKE_AdjPrev)
+TEETHLOST_AdjPrev.imp<-ifelse(is.na(TEETHLOST_AdjPrev), mean(TEETHLOST_AdjPrev, na.rm=TRUE), TEETHLOST_AdjPrev)
+#combine new variables in a new final dataframe 
+Final1<-cbind(Final, ACCESS2_AdjPrev.imp, ARTHRITIS_AdjPrev.imp, BINGE_AdjPrev.imp, BPHIGH_AdjPrev.imp, BPHIGH_AdjPrev.imp,
+            BPMED_AdjPrev.imp, CANCER_AdjPrev.imp, CASTHMA_AdjPrev.imp, CHD_AdjPrev.imp, CHECKUP_AdjPrev.imp, CHOLSCREEN_AdjPrev.imp,
+            COPD_AdjPrev.imp, COREM_AdjPrev.imp, COREW_AdjPrev.imp, CSMOKING_AdjPrev.imp, DENTAL_AdjPrev.imp, DIABETES_AdjPrev.imp,
+            HIGHCHOL_AdjPrev.imp,  KIDNEY_AdjPrev.imp, LPA_AdjPrev.imp, MAMMOUSE_AdjPrev.imp,MHLTH_AdjPrev.imp,  OBESITY_AdjPrev.imp,
+            PAPTEST_AdjPrev.imp, PHLTH_AdjPrev.imp, SLEEP_AdjPrev.imp, STROKE_AdjPrev.imp, TEETHLOST_AdjPrev.imp)
+```
+
+The continuous variables create a complex model. Some continuous variables will be collapsed into categorical variables to reduce complexity. 
+```{r}
+#Make a new copy of the data file
+Final3<-Final1
+#ACCESS2_AdjPrev.imp
+summary(Final1$ACCESS2_AdjPrev.imp)
+hist(Final1$ACCESS2_AdjPrev.imp)
+#recode based on quartiles
+Final3$ACCESS2_AdjPrev.imp<-ifelse(Final3$ACCESS2_AdjPrev.imp>=18.47, "high", "low")
+table(Final3$ACCESS2_AdjPrev.imp)
+Final3$ACCESS2_AdjPrev.imp<-as.factor(Final3$ACCESS2_AdjPrev.imp)
+#recode ARTHRITIS_AdjPrev.imp
+summary(Final1$ARTHRITIS_AdjPrev.imp)
+hist(Final1$ARTHRITIS_AdjPrev.imp)
+Final3$ARTHRITIS_AdjPrev.imp<-ifelse(Final3$ARTHRITIS_AdjPrev.imp>=23.61, "high", "low")
+table(Final3$ARTHRITIS_AdjPrev.imp)
+Final3$ARTHRITIS_AdjPrev.imp<-as.factor(Final3$ARTHRITIS_AdjPrev.imp)
+
+#BINGE_AdjPrev.imp
+summary(Final1$BINGE_AdjPrev.imp)
+hist(Final1$BINGE_AdjPrev.imp)
+Final3$BINGE_AdjPrev.imp<-ifelse(Final3$BINGE_AdjPrev.imp>=16.45, "high", "low")
+table(Final3$BINGE_AdjPrev.imp)
+Final3$BINGE_AdjPrev.imp<-as.factor(Final3$BINGE_AdjPrev.imp)
+
+#Recode CANCER_AdjPrev.imp
+summary(Final1$CANCER_AdjPrev.imp)
+hist(Final1$CANCER_AdjPrev.imp)
+Final3$CANCER_AdjPrev.imp<-ifelse(Final3$CANCER_AdjPrev.imp>=5.9, "high", "low")
+table(Final3$CANCER_AdjPrev.imp)
+Final3$CANCER_AdjPrev.imp<-as.factor(Final3$CANCER_AdjPrev.imp)
+
+#CASTHMA_AdjPrev.imp
+summary(Final1$CASTHMA_AdjPrev.imp)
+hist(Final1$CASTHMA_AdjPrev.imp)
+Final3$CASTHMA_AdjPrev.imp<-ifelse(Final3$CASTHMA_AdjPrev.imp>=9.3, "high", "low")
+table(Final3$CASTHMA_AdjPrev.imp)
+Final3$CASTHMA_AdjPrev.imp<-as.factor(Final3$CASTHMA_AdjPrev.imp)
+Final3$CASTHMA_AdjPrev.imp<-as.factor(Final3$CASTHMA_AdjPrev.imp)
+
+#recode CHOLSCREEN_AdjPrev.imp
+summary(Final1$CHOLSCREEN_AdjPrev.imp)
+hist(Final1$CHOLSCREEN_AdjPrev.imp)
+Final3$CHOLSCREEN_AdjPrev.imp<-ifelse(Final3$CHOLSCREEN_AdjPrev.imp>=73.74, "high", "low")
+table(Final3$CHOLSCREEN_AdjPrev.imp)
+Final3$CHOLSCREEN_AdjPrev.imp<-as.factor(Final3$CHOLSCREEN_AdjPrev.imp)
+
+#recode DENTAL_AdjPrev.imp
+summary(Final1$DENTAL_AdjPrev.imp)
+hist(Final1$DENTAL_AdjPrev.imp)
+Final3$DENTAL_AdjPrev.imp<-ifelse(Final3$DENTAL_AdjPrev.imp>=61.61, "high", "low")
+table(Final3$DENTAL_AdjPrev.imp)
+Final3$DENTAL_AdjPrev.imp<-as.factor(Final3$DENTAL_AdjPrev.imp)
+
+
+#recode SLEEP_AdjPrev.imp
+summary(Final1$SLEEP_AdjPrev.imp)
+hist(Final1$SLEEP_AdjPrev.imp)
+Final3$SLEEP_AdjPrev.imp<-ifelse(Final3$SLEEP_AdjPrev.imp>=35.66, "high", "low")
+table(Final3$SLEEP_AdjPrev.imp)
+Final3$SLEEP_AdjPrev.imp<-as.factor(Final3$SLEEP_AdjPrev.imp)
+
+#TEETHLOST_AdjPrev.imp
+summary(Final1$TEETHLOST_AdjPrev.imp)
+hist(Final1$TEETHLOST_AdjPrev.imp)
+Final3$TEETHLOST_AdjPrev.imp<-ifelse(Final3$TEETHLOST_AdjPrev.imp>=14.80, "high", "low")
+table(Final3$TEETHLOST_AdjPrev.imp)
+Final3$TEETHLOST_AdjPrev.imp<-as.factor(Final3$TEETHLOST_AdjPrev.imp)
+
+#recode CHECKUP_AdjPrev.imp
+summary(Final1$CHECKUP_AdjPrev.imp)
+hist(Final1$CHECKUP_AdjPrev.imp)
+Final3$CHECKUP_AdjPrev.imp<-ifelse(Final3$CHECKUP_AdjPrev.imp>=68.14, "high", "low")
+table(Final3$CHECKUP_AdjPrev.imp)
+Final3$CHECKUP_AdjPrev.imp<-as.factor(Final3$CHECKUP_AdjPrev.imp)
+
+#recode COREM_AdjPrev.imp
+summary(Final1$COREM_AdjPrev.imp)
+hist(Final1$COREM_AdjPrev.imp)
+Final3$COREM_AdjPrev.imp<-ifelse(Final3$COREM_AdjPrev.imp>32.58, "high", "low")
+table(Final3$COREM_AdjPrev.imp)
+Final3$COREM_AdjPrev.imp<-as.factor(Final3$COREM_AdjPrev.imp)
+
+#recode COREW_AdjPrev.imp
+summary(Final1$COREW_AdjPrev.imp)
+hist(Final1$COREW_AdjPrev.imp)
+Final3$COREW_AdjPrev.imp<-ifelse(Final3$COREW_AdjPrev.imp>=31.04, "high", "low")
+table(Final3$COREW_AdjPrev.imp)
+Final3$COREW_AdjPrev.imp<-as.factor(Final3$COREW_AdjPrev.imp)
+
+```
+
+
+Finalizing the total data set, for the combined outcome and ACS data model 
+```{r}
+#Create binary variable for CHD
+Final3$outcome<-ifelse(Final1$CHD_AdjPrev.imp>=6.1, 1, 0)
+#There are 160 outcomes in this data set
+table(Final3$outcome)
+names(Final3)
+Final3<-Final3[-c(71)]
+
+```
+
+Pull in geographic data 
+```{r}
+Geography<-read.csv("~/Documents/QBS/Year 1/Health Informatics/Project/Data/Geography.csv", header=TRUE, sep = ",")
+names(Geography)
+Geography<-Geography[-c(1:2)]
+Geography$PlaceFIPS1<-as.factor(Geography$PlaceFIPS)
+#merge Geography with Final3 to obtain the geographic region for all rows in ACS
+Final3a<-merge(Final3, Geography, by="PlaceFIPS1", all.x = TRUE)
+names(Final3a)
+```
+
+
+Clean up dataset by removing variables
+```{r}
+names(Final3a)
+#25 missing from region 
+sapply(Final3a, function(x)sum(is.na(x)))
+#check row number of missing Region
+cbind(Final3a$PlaceFIPS1, Final3a$Region)
+#using the FIPS1, region will be manually population 
+Final3a$Region [Final3a$'PlaceFIPS1'=="121184"] <- "South"
+Final3a$Region [Final3a$'PlaceFIPS1'=="410670"] <- "West"
+Final3a$Region [Final3a$'PlaceFIPS1'=="637692"] <- "Central"
+Final3a$Region [Final3a$'PlaceFIPS1'=="659444"] <- "West"
+Final3a$Region [Final3a$'PlaceFIPS1'=="683346"] <- "West"
+Final3a$Region [Final3a$'PlaceFIPS1'=="836410"] <- "South"
+Final3a$Region [Final3a$'PlaceFIPS1'=="1208150"] <- "South"
+Final3a$Region [Final3a$'PlaceFIPS1'=="1217100"] <- "South"
+Final3a$Region [Final3a$'PlaceFIPS1'=="1224125"] <- "South"
+Final3a$Region [Final3a$'PlaceFIPS1'=="1243975"] <- "South"
+Final3a$Region [Final3a$'PlaceFIPS1'=="1258050"] <- "South"
+Final3a$Region [Final3a$'PlaceFIPS1'=="1319000"] <- "South"
+Final3a$Region [Final3a$'PlaceFIPS1'=="1369000"] <- "South"
+Final3a$Region [Final3a$'PlaceFIPS1'=="1706613"] <- "Central"
+Final3a$Region [Final3a$'PlaceFIPS1'=="1751622"] <- "Central"
+Final3a$Region [Final3a$'PlaceFIPS1'=="1759000"] <- "Central"
+Final3a$Region [Final3a$'PlaceFIPS1'=="2250115"] <- "South"
+Final3a$Region [Final3a$'PlaceFIPS1'=="2717288"] <- "Central"
+Final3a$Region [Final3a$'PlaceFIPS1'=="2964082"] <- "Central"
+Final3a$Region [Final3a$'PlaceFIPS1'=="3254600"] <- "West"
+Final3a$Region [Final3a$'PlaceFIPS1'=="3268585"] <- "West"
+Final3a$Region [Final3a$'PlaceFIPS1'=="3271400"] <- "West"
+Final3a$Region [Final3a$'PlaceFIPS1'=="3473110"] <- "East"
+Final3a$Region [Final3a$'PlaceFIPS1'=="3615000"] <- "South"
+Final3a$Region [Final3a$'PlaceFIPS1'=="4738320"] <- "South"
+Final3a$Region [Final3a$'PlaceFIPS1'=="5103000"] <- "East"
+Final3a$Region [Final3a$'PlaceFIPS1'=="1571550"] <- "East"
+Final3a$Region [Final3a$'PlaceFIPS1'=="1349008"] <- "South"
+Final3a$Region [Final3a$'PlaceFIPS1'=="1272145"] <- "South"
+Final3a$Region [Final3a$'PlaceFIPS1'=="1268350"] <- "South"
+Final3a$Region [Final3a$'PlaceFIPS1'=="1260950"] <- "South"
+Final3a$Region [Final3a$'PlaceFIPS1'=="1239925"] <- "South"
+names(Final3a)
+#remove extra geography variables, gender centric variables and screening related variables
+Final3a<-Final3a[-c(1, 37:38,39:66, 69, 74, 75, 76, 78, 79, 81, 85, 86, 89,91, 93, 95)]
+names(Final3a)
+table(Final3a$outcome)
+#outcome as a facotr
+Final3a$outcome<-as.factor(Final3a$outcome)
+#save data file 
+save(Final3a, file="Final3a.Rda")
+```
+
+
+A similar dataset will be used to run the outcome only or base model. The main exception is that the outcome or base model will include only outcome data with no ACS data. As such, the final combined dataset is used and the ACS variables are removed. 
+```{r}
+names(Final3a)
+#remove the ACS and region variable
+Outcome2<-Final3a[-c(1:35, 52)]
+names(Outcome2)
+#save datafile
+save(Outcome2, file="Outcome2.Rda")
+str(Outcome2)
+```
+
+
+##Base: Outcome data only 
+In order to run a ridge regression model, several crucial preliminary steps are required. The data must be split into 2/3 train and 1/3 test test.
+
+Load outcome only data file
+```{r}
+load("Outcome2.Rda")
+```
+
+Lasso prediction model on outcome data only, also known as the "base" model. The caret packages is used, cross validation with 10 fold CV and 5 repeats was used. 
+
+```{r}
+#set seed for repurposing
+set.seed(70115)
+
+#levels must be changed from "1" and "0" to "yes" and "no" for caret package to work 
+levels(Outcome2$outcome)[levels(Outcome2$outcome)==1]<-"yes"
+levels(Outcome2$outcome)[levels(Outcome2$outcome)==0]<-"no"
+str(Outcome2$outcome)
+Outcome2$outcome<-as.factor(Outcome2$outcome)
+
+#create training and test 
+d_rf1a <- split_train_test(d = Outcome2, outcome = outcome)
+train_set_rf1a <- d_rf1a$train
+test_set_rf1a <- d_rf1a$test
+
+lambda <- 10^seq(-3, 3, length = 100)
+
+ctrl <- trainControl(method = "repeatedcv",
+                     number = 10,
+                     repeats = 5,
+                     summaryFunction = prSummary,
+                     classProbs = TRUE,
+                     verboseIter=TRUE
+                     )
+lasso <- train(
+  outcome ~., data = train_set_rf1a, method = "glmnet",
+  trControl = ctrl, metric="AUC",
+  tuneGrid = expand.grid(alpha = 1, lambda = lambda), family="binomial")
+
+coef(lasso$finalModel, lasso$bestTune$lambda)
+
+predictions <- lasso %>% predict(test_set_rf1a)
+
+ROC.lasso <- pROC::roc(test_set_rf1a$outcome, as.numeric(predictions))
+AUROC.lasso <- pROC::auc(ROC.lasso)
+AUROC.lasso
+CI.AUROC.lasso <- pROC::ci.auc(AUROC.lasso)
+CI.AUROC.lasso
+plot(ROC.lasso)
+caret::confusionMatrix(predictions, test_set_rf1a$outcome, positive="yes", mode="everything")
+
+```
+
+
+The continuous variables create a complex model. Some continuous variables will be collapsed into categorical variables to reduce complexity. 
+```{r}
+Final4<-Final3a
+summary(Final3$Med_housing_cost)
+Final4$Med_housing_cost<-ifelse(Final4$Med_housing_cost>=10.322, "high", "low")
+Final4$Med_housing_cost<-as.factor(Final4$Med_housing_cost)
+summary(Final4$owner_units_mort)
+Final4$owner_units_mort<-ifelse(Final4$owner_units_mort>=9.906, "high", "low")
+Final4$owner_units_mort<-as.factor(Final4$owner_units_mort)
+summary(Final4$value_owner_units_mort)
+Final4$value_owner_units_mort<-ifelse(Final4$value_owner_units_mort>=12.18, "high", "low")
+Final4$value_owner_units_mort<-as.factor(Final4$owner_units_mort)
+summary(Final4$second_m_or_equity_loan)
+Final4$second_m_or_equity_loan<-ifelse(Final4$second_m_or_equity_loan>=2.58776, "high", "low")
+Final4$second_m_or_equity_loan<-as.factor(Final4$second_m_or_equity_loan)
+summary(Final4$second_mortgage)
+Final4$second_mortgage<-ifelse(Final4$second_mortgage>=1.1632, "high", "low")
+Final4$second_mortgage<-as.factor(Final4$second_mortgage)
+summary(Final4$equity_loan)
+Final4$equity_loan<-ifelse(Final4$equity_loan>=9.6, "high", "low") 
+Final4$equity_loan<-as.factor(Final4$equity_loan)
+summary(Final4$both_secondM_equity_loan)
+Final4$both_secondM_equity_loan<-ifelse(Final4$both_secondM_equity_loan>=0.4, "high", "low")
+Final4$both_secondM_equity_loan<-as.factor(Final4$both_secondM_equity_loan)
+summary(Final4$no_second_loan)
+summary(Final4$median_owner_estate_tax)
+Final4$median_owner_estate_tax<-ifelse(Final4$median_owner_estate_tax>7.787, "high", "low")
+Final4$median_owner_estate_tax<-as.factor(Final4$median_owner_estate_tax)
+summary(Final4$median_selected_owner_pHH)
+Final4$median_selected_owner_pHH<-ifelse(Final4$median_selected_owner_pHH>19.10, "high", "low")
+Final4$median_selected_owner_pHH<-as.factor(Final4$median_selected_owner_pHH)
+summary(Final4$median_selected_owner_pHH_wm)
+Final4$median_selected_owner_pHH_wm<-ifelse(Final4$median_selected_owner_pHH_wm>=22.50, "high", "low")
+Final4$median_selected_owner_pHH_wm<-as.factor(Final4$median_selected_owner_pHH_wm)
+summary(Final4$median_selected_owner_pHH_wom)
+Final4$median_selected_owner_pHH_wom<-ifelse(Final4$median_selected_owner_pHH_wom >=2.442, "high", "low")
+Final4$median_selected_owner_pHH_wom<-as.factor(Final4$median_selected_owner_pHH_wom)
+
+summary(Final4$vehicle_alone)
+Final4$vehicle_alone<-ifelse(Final4$vehicle_alone>=10.919, "high", "low")
+Final4$vehicle_alone<-as.factor(Final4$vehicle_alone)
+summary(Final4$public_transit_worker)
+Final4$public_transit_worker<-ifelse(Final4$public_transit_worker>=7.424, "high", "low")
+Final4$public_transit_worker<-as.factor(Final4$public_transit_worker)
+summary(Final4$HH_w_no_vehicles_available)
+Final4$HH_w_no_vehicles_available<-ifelse(Final4$HH_w_no_vehicles_available>=8.2, "high", "low")
+Final4$HH_w_no_vehicles_available<-as.factor(Final4$HH_w_no_vehicles_available)
+summary(Final4$vehicle_alone_worker)
+Final4$vehicle_alone_worker<-ifelse(Final4$vehicle_alone_worker>8.868, "high", "low")
+Final4$vehicle_alone_worker<-as.factor(Final4$vehicle_alone_worker)
+
+Final4$units_house_heat_ele<-as.factor(Final4$units_house_heat_ele)
+Final4$units_house_heat_oil<-as.factor(Final4$units_house_heat_oil)
+Final4$units_house_heat_wood<-as.factor(Final4$units_house_heat_wood)
+Final4$units_house_heat_solar<-as.factor(Final4$units_house_heat_solar)
+Final4$units_house_heat_other<-as.factor(Final4$units_house_heat_other)
+
+
+```
+
+Review full variables avaiable and remove excess ACS variables due to complexity
+```{r}
+names(Final4)
+Final5<-Final4
+#remove some ACS variables due to model complexity
+Final5<-Final4[-c(2:4, 7:8, 10:21, 28, 32, 33)]
+names(Final5)
+str(Final5)
+table(Final5$outcome)
+save(Final5, file="Final5.Rda")
+```
+
+#Re-run base model with variables transformed 
+
+```{r}
+names(Final5)
+#remove ACS variables
+Final6<-Final5[-c(1:15, 32)]
+
+#set seed for repurposing
+set.seed(70115)
+
+#levels must be changed from "1" and "0" to "yes" and "no" for caret package to work 
+levels(Final6$outcome)[levels(Final6$outcome)==1]<-"yes"
+levels(Final6$outcome)[levels(Final6$outcome)==0]<-"no"
+str(Final6$outcome)
+Final6$outcome<-as.factor(Final6$outcome)
+
+#create training and test 
+d_rf1a <- split_train_test(d = Final6, outcome = outcome)
+train_set_rf1a <- d_rf1a$train
+test_set_rf1a <- d_rf1a$test
+
+lambda <- 10^seq(-3, 3, length = 100)
+
+ctrl <- trainControl(method = "repeatedcv",
+                     number = 10,
+                     repeats = 5,
+                     summaryFunction = prSummary,
+                     classProbs = TRUE,
+                     verboseIter=TRUE
+                     )
+lasso <- train(
+  outcome ~., data = train_set_rf1a, method = "glmnet",
+  trControl = ctrl, metric="AUC",
+  tuneGrid = expand.grid(alpha = 1, lambda = lambda), family="binomial")
+
+coef(lasso$finalModel, lasso$bestTune$lambda)
+
+predictions <- lasso %>% predict(test_set_rf1a)
+predictions_numeric1<-predict(lasso, test_set_rf1a, type="prob")
+
+ROC.lasso <- pROC::roc(test_set_rf1a$outcome, as.numeric(predictions))
+AUROC.lasso <- pROC::auc(ROC.lasso)
+AUROC.lasso
+CI.AUROC.lasso <- pROC::ci.auc(AUROC.lasso)
+CI.AUROC.lasso
+sd1lasso<- var(AUROC.lasso)
+(se1lasso<-sqrt(sd1lasso))
+
+plot(ROC.lasso)
+
+
+caret::confusionMatrix(predictions, test_set_rf1a$outcome, positive="yes", mode="everything")
+
+###Calibration work######
+
+#convert outcome back into "0" and "1"
+test_set_rf1a$outcome<-ifelse(test_set_rf1a$outcome=="yes", 1, 0)
+test_set_rf1a<-as.data.frame(test_set_rf1a)
+cOutcome<-16
+model1<-plotCalibration(data=test_set_rf1a, cOutcome=cOutcome, predRisk=predictions_numeric1$yes)
+model1_test_table<-as.data.frame(model1$Table_HLtest)
+View(model1_test_table)
+plot(model1_test_table$meanpred, model1_test_table$meanobs)
+
+#calculate brier score 
+brier.score <- function(p, y) {
+  
+  return((t(((p-y)^2)) %*% rep((1/length(p)), length(p)))[1,1])
+  
+}
+
+brier.score.2 <- function(p, y) {
+  
+  return((sum(((p-y)^2))*(1/length(p))))
+  
+}
+#0.0577
+(brierScore.lasso <- brier.score.2(predictions_numeric1$yes, test_set_rf1a$outcome))
+
+```
+
+##Full: Outcome and ACS Data
+In order to run a LASSO regression model, several crucial preliminary steps are required. The data must be split into 2/3 train and 1/3 test test. 
+
+Load combined data file
+```{r}
+load("Final5.Rda")
+```
+
+
+Lasso prediction model with outcome + consumer data, also known as the "full" model. The caret packages is used, cross validation with 10 fold CV and 5 repeats was used.  
+```{r}
+names(Final5)
+#set seed for repurposing
+set.seed(70115)
+
+#levels must be changed from "1" and "0" to "yes" and "no" for caret package to work 
+levels(Final5$outcome)[levels(Final5$outcome)==1]<-"yes"
+levels(Final5$outcome)[levels(Final5$outcome)==0]<-"no"
+str(Final5$outcome)
+Final5$outcome<-as.factor(Final5$outcome)
+
+#create training and test 
+d_rf1 <- split_train_test(d = Final5, outcome = outcome)
+train_set_rf1 <- d_rf1$train
+test_set_rf1 <- d_rf1$test
+
+lambda <- 10^seq(-3, 3, length = 100)
+
+ctrl <- trainControl(method = "repeatedcv",
+                     number = 10,
+                     repeats = 5,
+                     summaryFunction = prSummary,
+                     classProbs = TRUE,
+                     verboseIter=TRUE
+                     )
+lasso_full <- train(
+  outcome ~., data = train_set_rf1, method = "glmnet",
+  trControl = ctrl, metric="AUC",
+  tuneGrid = expand.grid(alpha = 1, lambda = lambda), family="binomial"
+)
+
+coef(lasso_full$finalModel, lasso_full$bestTune$lambda)
+
+predictions_full <- lasso_full %>% predict(test_set_rf1)
+#generate numeric probabilities 
+predictions_numeric2<-predict(lasso_full, test_set_rf1, type="prob")
+
+ROC.lasso_full <- pROC::roc(test_set_rf1$outcome, as.numeric(predictions_full))
+AUROC.lasso_full <- pROC::auc(ROC.lasso_full)
+AUROC.lasso_full
+
+CI.AUROC.lasso_full <- pROC::ci.auc(AUROC.lasso_full)
+CI.AUROC.lasso_full
+sd1lasso_full<- var(AUROC.lasso_full)
+(se1lasso_full<-sqrt(sd1lasso_full))
+
+plot(ROC.lasso_full)
+
+caret::confusionMatrix(predictions_full, test_set_rf1$outcome, positive="yes", mode="everything")
+
+#Model calibration 
+#convert outcome back into "0" and "1"
+test_set_rf1$outcome<-ifelse(test_set_rf1$outcome=="yes", 1, 0)
+test_set_rf1<-as.data.frame(test_set_rf1)
+cOutcome<-31
+model2<-plotCalibration(data=test_set_rf1, cOutcome=cOutcome, predRisk=predictions_numeric2$yes)
+model2_test_table<-as.data.frame(model2$Table_HLtest)
+View(model2_test_table)
+plot(model2_test_table$meanpred, model1_test_table$meanobs)
+
+#0.04304
+(brierScore.lasso_full <- brier.score.2(predictions_numeric2$yes, test_set_rf1$outcome))
+
+```
+
+
+Descriptive statistics on combined data file 
+```{r}
+str(Outcome2)
+factor_vars1<-c("outcome", "ACCESS2_AdjPrev.imp", "ARTHRITIS_AdjPrev.imp",
+              "CANCER_AdjPrev.imp", "CASTHMA_AdjPrev.imp")
+
+vars1<-c("BPHIGH_AdjPrev.imp", "BPMED_AdjPrev.imp", "COPD_AdjPrev.imp ", "CSMOKING_AdjPrev.imp",
+         "DIABETES_AdjPrev.imp","HIGHCHOL_AdjPrev.imp", "KIDNEY_AdjPrev.imp", 
+         "MHLTH_AdjPrev.imp", "OBESITY_AdjPrev.imp", "PHLTH_AdjPrev.imp", "STROKE_AdjPrev.imp ")
+
+str(Final5)  
+
+factor_var2<-c("outcome", "Med_housing_cost", 
+                "second_mortgage", "equity_loan", "public_transit_worker",
+               "HH_w_no_vehicles_available", "units_house_heat_ele", "units_house_heat_oil",
+               "units_house_heat_wood ", "units_house_heat_solar", "units_house_heat_other",
+               "vehicle_alone_worker", "Region")
+
+vars2<-c("no_second_loan", "median_household_income_adjD", "median_owner_housing_cost",
+        "median_value_housing_unit_wom", "median_HH_income_wom", "median_estate_tax_wom",
+        "vehicle_alone_worker ", "vehicles_available", "housing_cost_wm", "housing_cost_wom")
+
+#Create table 1
+tableOne <- CreateTableOne(vars = vars1, strata = "outcome", data = Outcome2, factorVars = factor_vars1)
+tableOne
+TableTwo<- CreateTableOne(vars=vars2, strata = "outcome", data= Final5, factorVars = factor_var2)
+TableTwo
+
+#Preare to export to excel table one
+print(tableOne, nonnormal = c("bili","chol","copper","alk.phos","trig"),
+      exact = c("status","stage"), cramVars = "sex", quote = TRUE)
+
+#Preare to export to excel table two
+print(TableTwo, nonnormal = c("bili","chol","copper","alk.phos","trig"),
+      exact = c("status","stage"), cramVars = "sex", quote = TRUE)
+
+#Categorical variables from Outcome2
+tbl01<-table(Outcome2$ACCESS2_AdjPrev.imp, Outcome2$outcome)
+prop.table(tbl01, 2)
+tbl02<-table(Outcome2$ARTHRITIS_AdjPrev.imp , Outcome2$outcome)
+prop.table(tbl02, 2)
+tbl03<-table(Outcome2$CANCER_AdjPrev.imp , Outcome2$outcome)
+prop.table(tbl03, 2)
+tbl04<-table(Outcome2$CASTHMA_AdjPrev.imp , Outcome2$outcome)
+prop.table(tbl04,2)
+
+factor_var2<-c("outcome", "Med_housing_cost",
+               "second_mortgage", "equity_loan", "public_transit_worker", "vehicle_alone_worker",
+               "HH_w_no_vehicles_available", "units_house_heat_ele", "units_house_heat_oil",
+               "units_house_heat_wood ", "units_house_heat_solar", "units_house_heat_other")
+
+#Categorical variables from Final5 
+tbl<-table(Final5$Med_housing_cost, Final5$outcome)
+prop.table(tbl, 2)
+tbl1<-table(Final5$second_mortgage , Final5$outcome)
+prop.table(tbl1, 2)
+tbl2<-table(Final5$equity_loan , Final5$outcome)
+prop.table(tbl2, 2)
+tbl3<-table(Final5$public_transit_worker, Final5$outcome)
+prop.table(tbl3, 2)
+tbl4<-table(Final5$vehicle_alone_worker, Final5$outcome)
+prop.table(tbl4, 2)
+tbl5<-table(Final5$HH_w_no_vehicles_available, Final5$outcome)
+prop.table(tbl5, 2)
+tbl6<-table(Final5$units_house_heat_ele, Final5$outcome)
+prop.table(tbl6, 2)
+tbl7<-table(Final5$units_house_heat_oil, Final5$outcome)
+prop.table(tbl7, 2)
+tbl8<-table(Final5$units_house_heat_other, Final5$outcome)
+prop.table(tbl8, 2)
+tbl9<-table(Final5$units_house_heat_wood, Final5$outcome)
+prop.table(tbl9,2)
+tbl10<-table(Final5$units_house_heat_solar, Final5$outcome)
+prop.table(tbl10,2)
+tbl11<-table(Final5$Region, Final5$outcome)
+prop.table(tbl11, 2)
+
+```
+
+A ROC comparison test will test for the difference between the ROC curve obtained in the base model (outcome only) and the ROC curve obtained in the full model (outcome + consumer data).
+```{r}
+roc.test(ROC.lasso, ROC.lasso_full)
+```
+
+
